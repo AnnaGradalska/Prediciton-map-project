@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.unet import UNet, CLASS_NAMES
+from models.unet import UNet, UNetResNet, CLASS_NAMES
 from training.dataset import create_dataloaders, create_demo_data
 
 # DeepGlobe class frequencies (Other 11%, Urban 7.9%, Water 3%, Vegetation 78.1%)
@@ -204,11 +204,17 @@ def train(args):
         image_size=args.image_size,
         num_workers=args.num_workers
     )
-    
-    model = UNet(n_channels=3, n_classes=4, bilinear=True)
+
+    if args.model == "unet_resnet":
+        model = UNetResNet(n_channels=3, n_classes=4, pretrained=True)
+        if args.freeze_encoder > 0:
+            model.freeze_encoder(True)
+            print(f"Encoder frozen for first {args.freeze_encoder} epochs (E3).")
+    else:
+        model = UNet(n_channels=3, n_classes=4, bilinear=True)
     model = model.to(device)
 
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Model: {args.model} | Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     if args.class_weights:
         class_weights = get_class_weights(DEEPGLOBE_CLASS_FREQS)
@@ -227,6 +233,10 @@ def train(args):
     print("=" * 60)
 
     for epoch in range(args.epochs):
+        if args.model == "unet_resnet" and args.freeze_encoder > 0 and epoch == args.freeze_encoder:
+            model.freeze_encoder(False)
+            print("Encoder unfrozen; fine-tuning full model.")
+
         print(f"\nEpoch {epoch+1}/{args.epochs}")
 
         train_loss, train_dice = train_epoch(model, train_loader, criterion, optimizer, device)
@@ -291,6 +301,10 @@ def main():
                         help='Number of demo samples (if no data)')
     parser.add_argument('--class-weights', action='store_true',
                         help='Use class weights (E2): inverse to DeepGlobe frequency')
+    parser.add_argument('--model', type=str, default='unet', choices=['unet', 'unet_resnet'],
+                        help='Model: unet (baseline) or unet_resnet (E3, ResNet-50 encoder)')
+    parser.add_argument('--freeze-encoder', type=int, default=0,
+                        help='Freeze encoder for first N epochs (E3). 0 = no freeze.')
 
     args = parser.parse_args()
     train(args)
