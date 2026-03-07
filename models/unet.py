@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-U-Net Model dla segmentacji zdjęć satelitarnych
-Klasy:
-    0 - Inne (tło)
-    1 - Tereny zurbanizowane (Urban)
-    2 - Wody (Water)
-    3 - Tereny zielone (Vegetation)
+U-Net and U-Net with ResNet-50 encoder for satellite image segmentation.
+Classes: 0 Other, 1 Urban, 2 Water, 3 Vegetation.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+try:
+    from torchvision.models import resnet50, ResNet50_Weights
+except ImportError:
+    resnet50 = None
+    ResNet50_Weights = None
 
 
 class DoubleConv(nn.Module):
@@ -128,7 +130,7 @@ class UNet(nn.Module):
         
         logits = self.outc(x)
         return logits
-    
+
     def predict(self, x):
         """Predykcja z softmax"""
         self.eval()
@@ -139,7 +141,65 @@ class UNet(nn.Module):
         return preds, probs
 
 
-# Słownik klas i kolorów do wizualizacji
+class UNetResNet(nn.Module):
+    """
+    U-Net with ResNet-50 encoder (E3). Pretrained on ImageNet for better features.
+    Decoder has skip connections from ResNet layer1, layer2, layer3.
+    """
+
+    def __init__(self, n_channels=3, n_classes=4, pretrained=True):
+        super().__init__()
+        self.n_classes = n_classes
+        if resnet50 is None:
+            raise ImportError("torchvision is required for UNetResNet. Install: pip install torchvision")
+
+        resnet = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1 if pretrained else None)
+        self.stem = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
+        self.encoder1 = resnet.layer1   # 256 ch, 1/4
+        self.encoder2 = resnet.layer2  # 512 ch, 1/8
+        self.encoder3 = resnet.layer3  # 1024 ch, 1/16
+        self.encoder4 = resnet.layer4  # 2048 ch, 1/32
+
+        self.up1 = Up(2048 + 1024, 1024)
+        self.up2 = Up(1024 + 512, 512)
+        self.up3 = Up(512 + 256, 256)
+        self.up4 = Up(256 + 64, 128)
+        self.up5 = nn.Sequential(
+            nn.Upsample(scale_factor=4, mode='bilinear', align_corners=True),
+            DoubleConv(128, 64)
+        )
+        self.outc = OutConv(64, n_classes)
+
+    def forward(self, x):
+        # Encoder
+        x0 = self.stem(x)           # 64, 1/4
+        x1 = self.encoder1(x0)      # 256, 1/4
+        x2 = self.encoder2(x1)      # 512, 1/8
+        x3 = self.encoder3(x2)      # 1024, 1/16
+        x4 = self.encoder4(x3)      # 2048, 1/32
+
+        # Decoder with skip connections
+        x = self.up1(x4, x3)
+        x = self.up2(x, x2)
+        x = self.up3(x, x1)
+        x = self.up4(x, x0)
+        x = self.up5(x)
+        return self.outc(x)
+
+    def freeze_encoder(self, freeze=True):
+        for p in self.stem.parameters():
+            p.requires_grad = not freeze
+        for p in self.encoder1.parameters():
+            p.requires_grad = not freeze
+        for p in self.encoder2.parameters():
+            p.requires_grad = not freeze
+        for p in self.encoder3.parameters():
+            p.requires_grad = not freeze
+        for p in self.encoder4.parameters():
+            p.requires_grad = not freeze
+
+
+# Class names and colors for visualization
 CLASS_NAMES = {
     0: "Inne",
     1: "Tereny zurbanizowane",
@@ -155,22 +215,18 @@ CLASS_COLORS = {
 }
 
 
-def get_model(n_channels=3, n_classes=4, pretrained_path=None):
+def get_model(n_channels=3, n_classes=4, pretrained_path=None, model_type="unet"):
     """
-    Funkcja pomocnicza do tworzenia modelu
-    
-    Args:
-        n_channels: liczba kanałów wejściowych
-        n_classes: liczba klas
-        pretrained_path: ścieżka do wag modelu (opcjonalnie)
+    Create model by type. Supports 'unet' (baseline) and 'unet_resnet' (E3).
     """
-    model = UNet(n_channels=n_channels, n_classes=n_classes)
-    
+    if model_type == "unet_resnet":
+        model = UNetResNet(n_channels=n_channels, n_classes=n_classes, pretrained=True)
+    else:
+        model = UNet(n_channels=n_channels, n_classes=n_classes)
     if pretrained_path:
-        state_dict = torch.load(pretrained_path, map_location='cpu')
-        model.load_state_dict(state_dict)
-        print(f"Załadowano wagi z: {pretrained_path}")
-    
+        state_dict = torch.load(pretrained_path, map_location="cpu")
+        model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded weights from: {pretrained_path}")
     return model
 
 
