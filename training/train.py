@@ -19,6 +19,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.unet import UNet, CLASS_NAMES
 from training.dataset import create_dataloaders, create_demo_data
 
+# DeepGlobe class frequencies (Other 11%, Urban 7.9%, Water 3%, Vegetation 78.1%)
+DEEPGLOBE_CLASS_FREQS = [0.11, 0.079, 0.03, 0.781]
+
+
+def get_class_weights(freqs, num_classes=4):
+    """Weights inverse to frequency: weight_c = 1 / (freq_c * num_classes), then normalized."""
+    weights = [1.0 / (f * num_classes) if f > 0 else 1.0 for f in freqs]
+    s = sum(weights)
+    return [w / s * num_classes for w in weights]
+
 
 def dice_coefficient(pred, target, num_classes=4, smooth=1e-6):
     """Compute Dice coefficient per class."""
@@ -58,35 +68,52 @@ def iou_score(pred, target, num_classes=4, smooth=1e-6):
 
 
 class DiceLoss(nn.Module):
-    """Dice loss for multi-class segmentation."""
-    
-    def __init__(self, num_classes=4, smooth=1e-6):
+    """Dice loss for multi-class segmentation. Optional class weights (E2)."""
+
+    def __init__(self, num_classes=4, smooth=1e-6, class_weights=None):
         super().__init__()
         self.num_classes = num_classes
         self.smooth = smooth
-    
+        if class_weights is not None:
+            self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
+        else:
+            self.class_weights = None
+
     def forward(self, pred, target):
         pred_soft = torch.softmax(pred, dim=1)
         target_one_hot = torch.nn.functional.one_hot(target, self.num_classes)
         target_one_hot = target_one_hot.permute(0, 3, 1, 2).float()
-        
+
         intersection = (pred_soft * target_one_hot).sum(dim=(2, 3))
         union = pred_soft.sum(dim=(2, 3)) + target_one_hot.sum(dim=(2, 3))
-        
-        dice = (2. * intersection + self.smooth) / (union + self.smooth)
-        return 1 - dice.mean()
+
+        dice_per_class = (2. * intersection + self.smooth) / (union + self.smooth)
+        dice_per_class = dice_per_class.mean(dim=0)
+
+        if self.class_weights is not None:
+            w = self.class_weights.to(pred.device)
+            dice_weighted = (w * dice_per_class).sum() / w.sum()
+        else:
+            dice_weighted = dice_per_class.mean()
+
+        return 1 - dice_weighted
 
 
 class CombinedLoss(nn.Module):
-    """Combination of Cross Entropy and Dice loss."""
-    
-    def __init__(self, num_classes=4, ce_weight=0.5, dice_weight=0.5):
+    """Combination of Cross Entropy and Dice loss. Optional class weights (E2)."""
+
+    def __init__(self, num_classes=4, ce_weight=0.5, dice_weight=0.5, class_weights=None):
         super().__init__()
-        self.ce = nn.CrossEntropyLoss()
-        self.dice = DiceLoss(num_classes)
+        if class_weights is not None:
+            weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
+            self.ce = nn.CrossEntropyLoss(weight=weight_tensor)
+            self.dice = DiceLoss(num_classes, class_weights=class_weights)
+        else:
+            self.ce = nn.CrossEntropyLoss()
+            self.dice = DiceLoss(num_classes)
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
-    
+
     def forward(self, pred, target):
         ce_loss = self.ce(pred, target)
         dice_loss = self.dice(pred, target)
@@ -183,9 +210,15 @@ def train(args):
 
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    criterion = CombinedLoss(num_classes=4, ce_weight=0.5, dice_weight=0.5)
+    if args.class_weights:
+        class_weights = get_class_weights(DEEPGLOBE_CLASS_FREQS)
+        print(f"Class weights (E2): {[f'{w:.3f}' for w in class_weights]}")
+        criterion = CombinedLoss(num_classes=4, ce_weight=0.5, dice_weight=0.5, class_weights=class_weights)
+    else:
+        criterion = CombinedLoss(num_classes=4, ce_weight=0.5, dice_weight=0.5)
+    criterion = criterion.to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_val_loss = float('inf')
     best_dice = 0
@@ -256,7 +289,9 @@ def main():
                         help='Save checkpoint every N epochs')
     parser.add_argument('--demo-samples', type=int, default=100,
                         help='Number of demo samples (if no data)')
-    
+    parser.add_argument('--class-weights', action='store_true',
+                        help='Use class weights (E2): inverse to DeepGlobe frequency')
+
     args = parser.parse_args()
     train(args)
 
