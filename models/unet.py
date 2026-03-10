@@ -16,7 +16,7 @@ except ImportError:
 
 
 class DoubleConv(nn.Module):
-    """Podwójna konwolucja: (Conv2D -> BatchNorm -> ReLU) x 2"""
+    """Double convolution: (Conv2D -> BatchNorm -> ReLU) x 2"""
     
     def __init__(self, in_channels, out_channels, mid_channels=None):
         super().__init__()
@@ -37,6 +37,7 @@ class DoubleConv(nn.Module):
 
 class Down(nn.Module):
     """Downsampling: MaxPool -> DoubleConv"""
+
     
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -50,7 +51,7 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    """Upsampling: UpConv/Bilinear -> Concat -> DoubleConv"""
+    """Upsampling: Bilinear/ConvTranspose -> Concat with skip -> DoubleConv"""
     
     def __init__(self, in_channels, out_channels, bilinear=True):
         super().__init__()
@@ -63,7 +64,7 @@ class Up(nn.Module):
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
-        # Dopasowanie rozmiaru
+        # Pad x1 to match x2 size if needed
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
         x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
@@ -73,7 +74,7 @@ class Up(nn.Module):
 
 
 class OutConv(nn.Module):
-    """Warstwa wyjściowa: Conv 1x1"""
+    """Output layer: Conv 1x1"""
     
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -85,12 +86,12 @@ class OutConv(nn.Module):
 
 class UNet(nn.Module):
     """
-    U-Net dla segmentacji satelitarnej
-    
+    U-Net for satellite image segmentation.
+
     Args:
-        n_channels: liczba kanałów wejściowych (3 dla RGB)
-        n_classes: liczba klas segmentacji (4: inne, urban, water, vegetation)
-        bilinear: użyj bilinear upsampling zamiast transposed conv
+        n_channels: number of input channels (3 for RGB)
+        n_classes: number of segmentation classes (4: other, urban, water, vegetation)
+        bilinear: use bilinear upsampling instead of transposed convolution
     """
     
     def __init__(self, n_channels=3, n_classes=4, bilinear=True):
@@ -99,15 +100,15 @@ class UNet(nn.Module):
         self.n_classes = n_classes
         self.bilinear = bilinear
 
-        # Encoder (ścieżka kurcząca)
+        # Encoder (contracting path)
         self.inc = DoubleConv(n_channels, 64)
         self.down1 = Down(64, 128)
         self.down2 = Down(128, 256)
         self.down3 = Down(256, 512)
         factor = 2 if bilinear else 1
         self.down4 = Down(512, 1024 // factor)
-        
-        # Decoder (ścieżka rozszerzająca)
+
+        # Decoder (expansive path)
         self.up1 = Up(1024, 512 // factor, bilinear)
         self.up2 = Up(512, 256 // factor, bilinear)
         self.up3 = Up(256, 128 // factor, bilinear)
@@ -121,8 +122,8 @@ class UNet(nn.Module):
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
-        
-        # Decoder z skip connections
+
+        # Decoder with skip connections
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
@@ -132,7 +133,7 @@ class UNet(nn.Module):
         return logits
 
     def predict(self, x):
-        """Predykcja z softmax"""
+        """Inference with softmax — returns predicted class indices and probabilities."""
         self.eval()
         with torch.no_grad():
             logits = self.forward(x)
@@ -201,17 +202,17 @@ class UNetResNet(nn.Module):
 
 # Class names and colors for visualization
 CLASS_NAMES = {
-    0: "Inne",
-    1: "Tereny zurbanizowane",
-    2: "Wody",
-    3: "Tereny zielone"
+    0: "Other",
+    1: "Urban",
+    2: "Water",
+    3: "Vegetation"
 }
 
 CLASS_COLORS = {
-    0: (128, 128, 128),    # Szary - Inne
-    1: (255, 0, 0),        # Czerwony - Urban
-    2: (0, 0, 255),        # Niebieski - Water
-    3: (0, 255, 0)         # Zielony - Vegetation
+    0: (128, 128, 128),    # Grey - Other
+    1: (255, 0, 0),        # Red - Urban
+    2: (0, 0, 255),        # Blue - Water
+    3: (0, 255, 0)         # Green - Vegetation
 }
 
 
@@ -231,11 +232,10 @@ def get_model(n_channels=3, n_classes=4, pretrained_path=None, model_type="unet"
 
 
 if __name__ == "__main__":
-    # Test modelu
     model = UNet(n_channels=3, n_classes=4)
     x = torch.randn(1, 3, 256, 256)
     y = model(x)
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {y.shape}")
-    print(f"Liczba parametrów: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 

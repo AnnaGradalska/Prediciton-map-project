@@ -25,7 +25,8 @@ from albumentations.pytorch import ToTensorV2
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.unet import UNet, CLASS_NAMES, CLASS_COLORS
+from models.unet import UNet, UNetResNet, CLASS_NAMES, CLASS_COLORS
+from models.deeplabv3 import get_deeplabv3_resnet101
 
 
 CLASS_NAMES_EN = {
@@ -81,6 +82,8 @@ class PredictionThread(QThread):
             self.model.eval()
             with torch.no_grad():
                 output = self.model(image_tensor)
+                if isinstance(output, dict):
+                    output = output['out']
                 probs = torch.softmax(output, dim=1)
                 pred = torch.argmax(probs, dim=1)
             
@@ -861,21 +864,33 @@ class AnalysisTab(QWidget):
                                                "PyTorch Model (*.pth *.pt)")
         if path:
             try:
-                self.main_window.model = UNet(n_channels=3, n_classes=4)
-                state_dict = torch.load(path, map_location=self.main_window.device)
-                
-                if 'model_state_dict' in state_dict:
-                    self.main_window.model.load_state_dict(state_dict['model_state_dict'])
+                name = os.path.basename(path).lower()
+
+                is_deeplabv3 = 'deeplabv3' in name
+                if is_deeplabv3:
+                    model = get_deeplabv3_resnet101(num_classes=4, pretrained=False)
+                elif 'unet_resnet' in name or 'resnet' in name:
+                    model = UNetResNet(n_classes=4, pretrained=False)
                 else:
-                    self.main_window.model.load_state_dict(state_dict)
-                
-                self.main_window.model = self.main_window.model.to(self.main_window.device)
+                    model = UNet(n_channels=3, n_classes=4)
+
+                image_size = 512 if '512' in name else 256
+                self.main_window.image_size = image_size
+
+                state_dict = torch.load(path, map_location=self.main_window.device)
+                if 'model_state_dict' in state_dict:
+                    state_dict = state_dict['model_state_dict']
+
+                # aux_classifier is only used during training — skip it when loading for inference
+                model.load_state_dict(state_dict, strict=not is_deeplabv3)
+
+                self.main_window.model = model.to(self.main_window.device)
                 self.main_window.model.eval()
-                
-                self.model_status.setText(f"Loaded: {os.path.basename(path)}")
+
+                self.model_status.setText(f"Loaded: {os.path.basename(path)} ({image_size}px)")
                 self.model_status.setStyleSheet(f"color: {COLORS['accent_green']}; font-weight: bold;")
                 self.update_analyze_button()
-                
+
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load model:\n{str(e)}")
     
@@ -938,7 +953,8 @@ class AnalysisTab(QWidget):
         self.pred_thread = PredictionThread(
             self.main_window.model,
             self.current_image,
-            self.main_window.device
+            self.main_window.device,
+            image_size=self.main_window.image_size
         )
         self.pred_thread.finished.connect(self.on_analysis_finished)
         self.pred_thread.error.connect(self.on_analysis_error)
@@ -1318,6 +1334,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self.model = None
+        self.image_size = 256
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Data directory

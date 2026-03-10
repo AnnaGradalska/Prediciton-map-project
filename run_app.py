@@ -1,8 +1,9 @@
 import sys
 import os
 
-# Dodaj ścieżkę projektu
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import torch  # must be imported before PyQt5 to avoid DLL conflict on Windows
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
