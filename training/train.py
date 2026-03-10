@@ -319,8 +319,8 @@ def main():
                         help='Number of demo samples (if no data)')
     parser.add_argument('--class-weights', action='store_true',
                         help='Use class weights (E2): inverse to DeepGlobe frequency')
-    parser.add_argument('--model', type=str, default='unet', choices=['unet', 'unet_resnet'],
-                        help='Model: unet (baseline) or unet_resnet (E3, ResNet-50 encoder)')
+    parser.add_argument('--model', type=str, default='unet', choices=['unet', 'unet_resnet', 'deeplabv3'],
+                        help='Model: unet (baseline), unet_resnet (E3, ResNet-50 encoder) or deeplabv3 (E5, DeepLabV3+ ResNet-101)')
     parser.add_argument('--freeze-encoder', type=int, default=0,
                         help='Freeze encoder for first N epochs (E3). 0 = no freeze.')
 
