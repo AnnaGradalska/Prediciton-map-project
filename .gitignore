@@ -22,6 +22,7 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 ENV/
 env/
 
@@ -35,6 +36,9 @@ data/
 data_deepglobe/
 *.tif
 *.tiff
+
+# Models
+trained_models/
 
 # Lokalna dokumentacja (opis kroków, notatki — do commitów wchodzi tylko kod/plan)
 opis.md
