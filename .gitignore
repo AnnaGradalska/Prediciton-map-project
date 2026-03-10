@@ -37,6 +37,9 @@ data_deepglobe/
 *.tif
 *.tiff
 
+# Models
+trained_models/
+
 # Lokalna dokumentacja (opis kroków, notatki — do commitów wchodzi tylko kod/plan)
 opis.md
 plan.md
