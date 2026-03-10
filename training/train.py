@@ -203,8 +203,6 @@ def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    os.makedirs(args.output_dir, exist_ok=True)
-
     if not os.path.exists(os.path.join(args.data_dir, 'train', 'images')):
         print("No training data. Creating demo data...")
         create_demo_data(args.data_dir, num_samples=args.demo_samples, image_size=args.image_size)
@@ -279,7 +277,7 @@ def train(args):
             print(f"  Saved best model (val_loss: {val_loss:.4f}) to {best_model_path}")
 
         if (epoch + 1) % args.save_every == 0:
-            checkpoint_path = os.path.join(args.output_dir, f'checkpoint_epoch_{epoch+1}.pth')
+            checkpoint_path = os.path.join("trained_models", args.model_name, f'checkpoint_epoch_{epoch+1}.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
