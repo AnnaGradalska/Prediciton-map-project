@@ -16,7 +16,8 @@ from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.unet import UNet, CLASS_NAMES
+from models.unet import UNet, UNetResNet, CLASS_NAMES
+from models.deeplabv3 import get_deeplabv3_resnet101
 from training.dataset import create_dataloaders, create_demo_data
 
 
@@ -93,6 +94,16 @@ class CombinedLoss(nn.Module):
         return self.ce_weight * ce_loss + self.dice_weight * dice_loss
 
 
+def get_logits(outputs):
+    """Extract logit tensor from model output.
+    U-Net/UNetResNet return a tensor directly.
+    DeepLabV3+ (torchvision) returns a dict {'out': tensor, 'aux': tensor}.
+    """
+    if isinstance(outputs, dict):
+        return outputs["out"]
+    return outputs
+
+
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train one epoch."""
     model.train()
@@ -105,7 +116,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
         masks = masks.to(device)
 
         optimizer.zero_grad()
-        outputs = model(images)
+        outputs = get_logits(model(images))
         loss = criterion(outputs, masks)
 
         loss.backward()
@@ -139,7 +150,7 @@ def validate(model, val_loader, criterion, device):
             images = images.to(device)
             masks = masks.to(device)
             
-            outputs = model(images)
+            outputs = get_logits(model(images))
             loss = criterion(outputs, masks)
             total_loss += loss.item()
             
@@ -177,8 +188,17 @@ def train(args):
         image_size=args.image_size,
         num_workers=args.num_workers
     )
-    
-    model = UNet(n_channels=3, n_classes=4, bilinear=True)
+
+    if args.model == "unet_resnet":
+        model = UNetResNet(n_channels=3, n_classes=4, pretrained=True)
+        if args.freeze_encoder > 0:
+            model.freeze_encoder(True)
+            print(f"Encoder frozen for first {args.freeze_encoder} epochs (E3).")
+    elif args.model == "deeplabv3":
+        # DeepLabV3+ with ResNet-101 backbone (torchvision), 4 output classes
+        model = get_deeplabv3_resnet101(num_classes=4, pretrained=True)
+    else:
+        model = UNet(n_channels=3, n_classes=4, bilinear=True)
     model = model.to(device)
 
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -256,7 +276,13 @@ def main():
                         help='Save checkpoint every N epochs')
     parser.add_argument('--demo-samples', type=int, default=100,
                         help='Number of demo samples (if no data)')
-    
+    parser.add_argument('--class-weights', action='store_true',
+                        help='Use class weights (E2): inverse to DeepGlobe frequency')
+    parser.add_argument('--model', type=str, default='unet', choices=['unet', 'unet_resnet', 'deeplabv3'],
+                        help='Model: unet (baseline), unet_resnet (E3, ResNet-50 encoder) or deeplabv3 (E5, DeepLabV3+ ResNet-101)')
+    parser.add_argument('--freeze-encoder', type=int, default=0,
+                        help='Freeze encoder for first N epochs (E3). 0 = no freeze.')
+
     args = parser.parse_args()
     train(args)
 
