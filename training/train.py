@@ -257,8 +257,12 @@ def train(args):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_dice = mean_val_dice
-            torch.save(model.state_dict(), os.path.join(args.output_dir, 'best_model.pth'))
-            print(f"  Saved best model (val_loss: {val_loss:.4f})")
+            # Save best model into trained_models/<model_name>/<model_name>.pth
+            best_model_dir = os.path.join("trained_models", args.model_name)
+            os.makedirs(best_model_dir, exist_ok=True)
+            best_model_path = os.path.join(best_model_dir, f"{args.model_name}.pth")
+            torch.save(model.state_dict(), best_model_path)
+            print(f"  Saved best model (val_loss: {val_loss:.4f}) to {best_model_path}")
 
         if (epoch + 1) % args.save_every == 0:
             checkpoint_path = os.path.join(args.output_dir, f'checkpoint_epoch_{epoch+1}.pth')
@@ -274,15 +278,15 @@ def train(args):
     print("Training finished.")
     print(f"Best Val Loss: {best_val_loss:.4f}")
     print(f"Best Val Dice: {best_dice:.4f}")
-    print(f"Model saved to: {os.path.join(args.output_dir, 'best_model.pth')}")
+    print(f"Best model stored in: trained_models/{args.model_name}/{args.model_name}.pth")
 
 
 def main():
     parser = argparse.ArgumentParser(description='Train satellite segmentation model')
     parser.add_argument('--data-dir', type=str, default='data',
                         help='Training data directory')
-    parser.add_argument('--output-dir', type=str, default='checkpoints',
-                        help='Directory for saved models')
+    parser.add_argument('--model-name', type=str, required=True,
+                        help='Name of the model')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8,
