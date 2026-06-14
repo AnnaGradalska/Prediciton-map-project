@@ -6,7 +6,6 @@ Training script for satellite image segmentation model.
 import os
 import sys
 import argparse
-from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn

@@ -28,6 +28,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.unet import UNet, UNetResNet, CLASS_NAMES, CLASS_COLORS
 from models.deeplabv3 import get_deeplabv3_resnet101
 
+# Optional classical (Random Forest) baseline from the landseg-classical package.
+try:
+    from landseg_classical import load_model as load_classical_model
+    LANDSEG_AVAILABLE = True
+except ImportError:
+    load_classical_model = None
+    LANDSEG_AVAILABLE = False
+
 
 CLASS_NAMES_EN = {
     0: "Other",
@@ -56,18 +64,31 @@ class PredictionThread(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
     
-    def __init__(self, model, image, device, image_size=256):
+    def __init__(self, model, image, device, image_size=256, is_classical=False):
         super().__init__()
         self.model = model
         self.image = image
         self.device = device
         self.image_size = image_size
+        self.is_classical = is_classical
     
     def run(self):
         try:
             self.progress.emit(20)
             original_size = self.image.shape[:2]
-            
+
+            if self.is_classical:
+                # Classical segmenter returns mask (H, W) and probs (4, H, W) at the
+                # original resolution, so no torch transform / softmax is needed.
+                self.progress.emit(50)
+                mask, probs = self.model.predict(self.image)
+                self.progress.emit(100)
+                self.finished.emit(
+                    mask.astype(np.uint8),
+                    probs.astype(np.float32),
+                )
+                return
+
             transform = A.Compose([
                 A.Resize(self.image_size, self.image_size),
                 A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -860,11 +881,15 @@ class AnalysisTab(QWidget):
         layout.addWidget(right_panel, 1)
     
     def load_model(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "",
-                                               "PyTorch Model (*.pth *.pt)")
+        file_filter = "Models (*.pth *.pt *.joblib);;PyTorch Model (*.pth *.pt);;Classical RF (*.joblib)"
+        path, _ = QFileDialog.getOpenFileName(self, "Select Model File", "", file_filter)
         if path:
             try:
                 name = os.path.basename(path).lower()
+
+                if name.endswith('.joblib'):
+                    self._load_classical_model(path)
+                    return
 
                 is_deeplabv3 = 'deeplabv3' in name
                 if is_deeplabv3:
@@ -886,6 +911,7 @@ class AnalysisTab(QWidget):
 
                 self.main_window.model = model.to(self.main_window.device)
                 self.main_window.model.eval()
+                self.main_window.model_is_classical = False
 
                 self.model_status.setText(f"Loaded: {os.path.basename(path)} ({image_size}px)")
                 self.model_status.setStyleSheet(f"color: {COLORS['accent_green']}; font-weight: bold;")
@@ -893,12 +919,32 @@ class AnalysisTab(QWidget):
 
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load model:\n{str(e)}")
+
+    def _load_classical_model(self, path):
+        if not LANDSEG_AVAILABLE:
+            QMessageBox.critical(
+                self, "Error",
+                "The 'landseg-classical' package is not installed.\n\n"
+                "Install it with:\n"
+                "pip install git+https://github.com/AnnaGradalska/landseg-classical@v0.1.1")
+            return
+        try:
+            self.main_window.model = load_classical_model(path)
+            self.main_window.model_is_classical = True
+
+            self.model_status.setText(f"Loaded: {os.path.basename(path)} (classical RF)")
+            self.model_status.setStyleSheet(f"color: {COLORS['accent_green']}; font-weight: bold;")
+            self.update_analyze_button()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load model:\n{str(e)}")
     
     def create_demo_model(self):
         try:
             self.main_window.model = UNet(n_channels=3, n_classes=4)
             self.main_window.model = self.main_window.model.to(self.main_window.device)
             self.main_window.model.eval()
+            self.main_window.image_size = 256
+            self.main_window.model_is_classical = False
             
             self.model_status.setText("Demo (untrained)")
             self.model_status.setStyleSheet(f"color: {COLORS['accent_orange']}; font-weight: bold;")
@@ -954,7 +1000,8 @@ class AnalysisTab(QWidget):
             self.main_window.model,
             self.current_image,
             self.main_window.device,
-            image_size=self.main_window.image_size
+            image_size=self.main_window.image_size,
+            is_classical=self.main_window.model_is_classical
         )
         self.pred_thread.finished.connect(self.on_analysis_finished)
         self.pred_thread.error.connect(self.on_analysis_error)
@@ -1335,6 +1382,7 @@ class MainWindow(QMainWindow):
         
         self.model = None
         self.image_size = 256
+        self.model_is_classical = False
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Data directory
