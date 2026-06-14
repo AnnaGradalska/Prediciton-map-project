@@ -81,10 +81,26 @@ class SatelliteDataset(Dataset):
         return image, mask
 
 
-def get_train_transforms(image_size=256):
+def _spatial_transform(image_size, crop):
+    """Pick how the large image is reduced to image_size.
+
+    - crop=False: resize the whole image (objects shrink; small classes like
+      buildings can disappear on large satellite tiles).
+    - crop=True: take a random native-resolution crop, so small structures keep
+      their real scale. This must match tiled inference at prediction time.
+    """
+    if crop:
+        return [
+            A.PadIfNeeded(min_height=image_size, min_width=image_size),
+            A.RandomCrop(image_size, image_size),
+        ]
+    return [A.Resize(image_size, image_size)]
+
+
+def get_train_transforms(image_size=256, crop=False):
     """Transforms for training set with augmentation."""
     return A.Compose([
-        A.Resize(image_size, image_size),
+        *_spatial_transform(image_size, crop),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
@@ -98,10 +114,10 @@ def get_train_transforms(image_size=256):
     ])
 
 
-def get_val_transforms(image_size=256):
+def get_val_transforms(image_size=256, crop=False):
     """Transforms for validation set (no augmentation)."""
     return A.Compose([
-        A.Resize(image_size, image_size),
+        *_spatial_transform(image_size, crop),
         A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ToTensorV2(),
     ])
@@ -116,7 +132,7 @@ def get_inference_transforms(image_size=256):
     ])
 
 
-def create_dataloaders(data_dir, batch_size=8, image_size=256, num_workers=4):
+def create_dataloaders(data_dir, batch_size=8, image_size=256, num_workers=4, crop=False):
     """
     Creates DataLoaders for training and validation.
 
@@ -125,18 +141,20 @@ def create_dataloaders(data_dir, batch_size=8, image_size=256, num_workers=4):
         batch_size: batch size
         image_size: image size
         num_workers: number of workers
+        crop: if True, use native-resolution random crops instead of resizing
+              the whole image (better for small classes such as buildings).
     """
     train_dataset = SatelliteDataset(
         images_dir=os.path.join(data_dir, 'train', 'images'),
         masks_dir=os.path.join(data_dir, 'train', 'masks'),
-        transform=get_train_transforms(image_size),
+        transform=get_train_transforms(image_size, crop=crop),
         image_size=image_size
     )
     
     val_dataset = SatelliteDataset(
         images_dir=os.path.join(data_dir, 'val', 'images'),
         masks_dir=os.path.join(data_dir, 'val', 'masks'),
-        transform=get_val_transforms(image_size),
+        transform=get_val_transforms(image_size, crop=crop),
         image_size=image_size
     )
     

@@ -210,7 +210,8 @@ def train(args):
         args.data_dir,
         batch_size=args.batch_size,
         image_size=args.image_size,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        crop=args.crop
     )
 
     if args.model == "unet_resnet":
@@ -320,6 +321,10 @@ def main():
                         help='Model: unet (baseline), unet_resnet (E3, ResNet-50 encoder) or deeplabv3 (E5, DeepLabV3+ ResNet-101)')
     parser.add_argument('--freeze-encoder', type=int, default=0,
                         help='Freeze encoder for first N epochs (E3). 0 = no freeze.')
+    parser.add_argument('--crop', action='store_true',
+                        help='Train on native-resolution random crops instead of '
+                             'resizing whole images (better for small classes like '
+                             'buildings). Use with tiled inference in the app.')
 
     args = parser.parse_args()
     train(args)
