@@ -30,6 +30,31 @@ def get_class_weights(freqs, num_classes=4):
     return [w / s * num_classes for w in weights]
 
 
+def make_colab_downloader():
+    """Return a callback that downloads a file to the user's computer from Colab.
+
+    Uses google.colab.files.download, which streams the file to the browser's
+    download folder. Returns None if not running inside a Colab kernel (e.g. local
+    runs or `!python` subprocess), in which case saving stays local-only.
+    """
+    try:
+        from google.colab import files  # type: ignore
+    except Exception:
+        print("  [download] google.colab not available - model stays on the local "
+              "filesystem only (run training in a Colab notebook cell to enable "
+              "auto-download).")
+        return None
+
+    def _download(path):
+        try:
+            print(f"  [download] Sending {os.path.basename(path)} to your computer...")
+            files.download(path)
+        except Exception as e:  # pragma: no cover - depends on Colab frontend
+            print(f"  [download] Could not download {path}: {e}")
+
+    return _download
+
+
 def dice_coefficient(pred, target, num_classes=4, smooth=1e-6):
     """Compute Dice coefficient per class."""
     dice_scores = []
@@ -196,14 +221,27 @@ def validate(model, val_loader, criterion, device):
     return avg_loss, avg_dice, avg_iou
 
 
-def train(args):
-    """Main training function."""
+def train(args, on_best_save=None):
+    """Main training function.
+
+    on_best_save: optional callback(path) invoked every time a new best model is
+    saved. Used to auto-download the model to the user's computer on Colab.
+    """
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
+    if on_best_save is None and getattr(args, 'download', False):
+        on_best_save = make_colab_downloader()
+
     if not os.path.exists(os.path.join(args.data_dir, 'train', 'images')):
-        print("No training data. Creating demo data...")
+        if not args.demo:
+            raise FileNotFoundError(
+                f"No training data at '{os.path.join(args.data_dir, 'train', 'images')}'.\n"
+                "Check --data-dir (e.g. point it to the real DeepGlobe folder).\n"
+                "To intentionally train on synthetic demo data, pass --demo."
+            )
+        print("No training data. Creating demo data (--demo)...")
         create_demo_data(args.data_dir, num_samples=args.demo_samples, image_size=args.image_size)
 
     train_loader, val_loader = create_dataloaders(
@@ -269,15 +307,22 @@ def train(args):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_dice = mean_val_dice
-            # Save best model into trained_models/<model_name>/<model_name>.pth
-            best_model_dir = os.path.join("trained_models", args.model_name)
+            # Save best model into <output_root>/<model_name>/<model_name>.pth.
+            # Point --output-root at a Drive folder to keep the model safe even if
+            # the Colab session is interrupted (best model is written every time it
+            # improves, not only at the end).
+            best_model_dir = os.path.join(args.output_root, args.model_name)
             os.makedirs(best_model_dir, exist_ok=True)
             best_model_path = os.path.join(best_model_dir, f"{args.model_name}.pth")
             torch.save(model.state_dict(), best_model_path)
             print(f"  Saved best model (val_loss: {val_loss:.4f}) to {best_model_path}")
+            if on_best_save is not None:
+                on_best_save(best_model_path)
 
         if (epoch + 1) % args.save_every == 0:
-            checkpoint_path = os.path.join("trained_models", args.model_name, f'checkpoint_epoch_{epoch+1}.pth')
+            checkpoint_dir = os.path.join(args.output_root, args.model_name)
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch+1}.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -290,7 +335,7 @@ def train(args):
     print("Training finished.")
     print(f"Best Val Loss: {best_val_loss:.4f}")
     print(f"Best Val Dice: {best_dice:.4f}")
-    print(f"Best model stored in: trained_models/{args.model_name}/{args.model_name}.pth")
+    print(f"Best model stored in: {os.path.join(args.output_root, args.model_name, args.model_name + '.pth')}")
 
 
 def main():
@@ -299,6 +344,11 @@ def main():
                         help='Training data directory')
     parser.add_argument('--model-name', type=str, required=True,
                         help='Name of the model')
+    parser.add_argument('--output-root', type=str, default='trained_models',
+                        help='Root folder where the model is saved. Point this at a '
+                             'Google Drive folder on Colab (e.g. '
+                             '/content/drive/MyDrive/trained_models) so the best model '
+                             'is written straight to Drive and survives a session reset.')
     parser.add_argument('--epochs', type=int, default=50,
                         help='Number of epochs')
     parser.add_argument('--batch-size', type=int, default=8,
@@ -325,6 +375,13 @@ def main():
                         help='Train on native-resolution random crops instead of '
                              'resizing whole images (better for small classes like '
                              'buildings). Use with tiled inference in the app.')
+    parser.add_argument('--demo', action='store_true',
+                        help='Allow generating synthetic demo data when --data-dir '
+                             'has no real data. Without this flag, missing data is an error.')
+    parser.add_argument('--download', action='store_true',
+                        help='On Colab, download the best model to your computer every '
+                             'time it improves (no Drive needed). Requires running '
+                             'training inside a notebook cell, not via "!python".')
 
     args = parser.parse_args()
     train(args)

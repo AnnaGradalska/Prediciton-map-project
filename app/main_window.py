@@ -64,14 +64,65 @@ class PredictionThread(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
     
-    def __init__(self, model, image, device, image_size=256, is_classical=False):
+    def __init__(self, model, image, device, image_size=256, is_classical=False,
+                 use_tiling=False):
         super().__init__()
         self.model = model
         self.image = image
         self.device = device
         self.image_size = image_size
         self.is_classical = is_classical
-    
+        self.use_tiling = use_tiling
+
+    def _tiled_predict(self):
+        """Slide a window of image_size over the original image, run the model on
+        each tile and average the per-class probabilities over overlaps. Returns
+        (mask (H, W), probs (4, H, W)) at the original resolution."""
+        h, w = self.image.shape[:2]
+        tile = self.image_size
+        overlap = tile // 4
+        stride = tile - overlap
+
+        transform = A.Compose([
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ToTensorV2(),
+        ])
+
+        def _starts(length):
+            positions = list(range(0, max(1, length - tile + 1), stride))
+            if not positions or positions[-1] != length - tile:
+                positions.append(max(0, length - tile))
+            return positions
+
+        ys = _starts(h)
+        xs = _starts(w)
+
+        prob_sum = np.zeros((4, h, w), dtype=np.float32)
+        count = np.zeros((h, w), dtype=np.float32)
+
+        total = len(ys) * len(xs)
+        done = 0
+        self.model.eval()
+        with torch.no_grad():
+            for y in ys:
+                for x in xs:
+                    crop = self.image[y:y + tile, x:x + tile]
+                    tensor = transform(image=crop)['image'].unsqueeze(0).to(self.device)
+                    output = self.model(tensor)
+                    if isinstance(output, dict):
+                        output = output['out']
+                    probs = torch.softmax(output, dim=1).squeeze(0).cpu().numpy()
+
+                    prob_sum[:, y:y + tile, x:x + tile] += probs
+                    count[y:y + tile, x:x + tile] += 1.0
+
+                    done += 1
+                    self.progress.emit(20 + int(70 * done / total))
+
+        probs_full = prob_sum / np.maximum(count, 1e-6)
+        mask = np.argmax(probs_full, axis=0).astype(np.uint8)
+        return mask, probs_full.astype(np.float32)
+
     def run(self):
         try:
             self.progress.emit(20)
@@ -87,6 +138,15 @@ class PredictionThread(QThread):
                     mask.astype(np.uint8),
                     probs.astype(np.float32),
                 )
+                return
+
+            if self.use_tiling and min(original_size) >= self.image_size:
+                # Tiled inference keeps small structures (e.g. buildings) at their
+                # native scale. Only valid for models trained on native-resolution
+                # crops (--crop), not on whole resized images.
+                pred_resized, probs_resized = self._tiled_predict()
+                self.progress.emit(100)
+                self.finished.emit(pred_resized, probs_resized)
                 return
 
             transform = A.Compose([
@@ -901,6 +961,9 @@ class AnalysisTab(QWidget):
 
                 image_size = 512 if '512' in name else 256
                 self.main_window.image_size = image_size
+                # Models trained on native-resolution crops are flagged in the file
+                # name (e.g. "..._crop"); they need tiled inference.
+                self.main_window.use_tiling = 'crop' in name or 'tile' in name
 
                 state_dict = torch.load(path, map_location=self.main_window.device)
                 if 'model_state_dict' in state_dict:
@@ -913,7 +976,8 @@ class AnalysisTab(QWidget):
                 self.main_window.model.eval()
                 self.main_window.model_is_classical = False
 
-                self.model_status.setText(f"Loaded: {os.path.basename(path)} ({image_size}px)")
+                mode = "tiled" if self.main_window.use_tiling else f"{image_size}px"
+                self.model_status.setText(f"Loaded: {os.path.basename(path)} ({mode})")
                 self.model_status.setStyleSheet(f"color: {COLORS['accent_green']}; font-weight: bold;")
                 self.update_analyze_button()
 
@@ -945,6 +1009,7 @@ class AnalysisTab(QWidget):
             self.main_window.model.eval()
             self.main_window.image_size = 256
             self.main_window.model_is_classical = False
+            self.main_window.use_tiling = False
             
             self.model_status.setText("Demo (untrained)")
             self.model_status.setStyleSheet(f"color: {COLORS['accent_orange']}; font-weight: bold;")
@@ -1001,7 +1066,8 @@ class AnalysisTab(QWidget):
             self.current_image,
             self.main_window.device,
             image_size=self.main_window.image_size,
-            is_classical=self.main_window.model_is_classical
+            is_classical=self.main_window.model_is_classical,
+            use_tiling=self.main_window.use_tiling
         )
         self.pred_thread.finished.connect(self.on_analysis_finished)
         self.pred_thread.error.connect(self.on_analysis_error)
@@ -1383,6 +1449,7 @@ class MainWindow(QMainWindow):
         self.model = None
         self.image_size = 256
         self.model_is_classical = False
+        self.use_tiling = False
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Data directory
