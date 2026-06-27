@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.unet import UNet, UNetResNet, CLASS_NAMES
 from models.deeplabv3 import get_deeplabv3_resnet101
-from training.dataset import create_dataloaders, create_demo_data
+from training.dataset import create_dataloaders, create_demo_data, log_class_distribution
 
 # DeepGlobe class frequencies (Other 11%, Urban 7.9%, Water 3%, Vegetation 78.1%)
 DEEPGLOBE_CLASS_FREQS = [0.11, 0.079, 0.03, 0.781]
@@ -244,13 +244,27 @@ def train(args, on_best_save=None):
         print("No training data. Creating demo data (--demo)...")
         create_demo_data(args.data_dir, num_samples=args.demo_samples, image_size=args.image_size)
 
+    rare_classes = tuple(int(c) for c in args.rare_classes.split(',')) if args.rare_classes else (1, 2)
     train_loader, val_loader = create_dataloaders(
         args.data_dir,
         batch_size=args.batch_size,
         image_size=args.image_size,
         num_workers=args.num_workers,
-        crop=args.crop
+        crop=args.crop,
+        balanced_crop=args.balanced_crop,
+        rare_classes=rare_classes,
+        balanced_min_fraction=args.balanced_min_fraction,
+        balanced_attempts=args.balanced_attempts,
     )
+
+    # Sanity check: how much of each class the model actually sees after
+    # cropping/sampling. Compare with/without --balanced-crop.
+    if args.crop:
+        print(f"Balanced crop: {args.balanced_crop} "
+              f"(rare={rare_classes}, min_fraction={args.balanced_min_fraction}, "
+              f"attempts={args.balanced_attempts})")
+    log_class_distribution(train_loader, num_classes=4, max_batches=20,
+                           class_names=CLASS_NAMES)
 
     if args.model == "unet_resnet":
         model = UNetResNet(n_channels=3, n_classes=4, pretrained=True)
@@ -374,7 +388,21 @@ def main():
     parser.add_argument('--crop', action='store_true',
                         help='Train on native-resolution random crops instead of '
                              'resizing whole images (better for small classes like '
-                             'buildings). Use with tiled inference in the app.')
+                             'buildings). Use with tiled inference in the app. '
+                             'Validation uses a deterministic center crop.')
+    parser.add_argument('--balanced-crop', action='store_true',
+                        help='With --crop, oversample training crops that contain '
+                             'rare classes (urban/water) so the model stops '
+                             'defaulting to vegetation. Strongly recommended.')
+    parser.add_argument('--rare-classes', type=str, default='1,2',
+                        help='Comma-separated class ids treated as rare for '
+                             'balanced cropping (default 1,2 = urban,water).')
+    parser.add_argument('--balanced-min-fraction', type=float, default=0.05,
+                        help='Min fraction of rare-class pixels a crop must have '
+                             'to be accepted by balanced sampling (default 0.05).')
+    parser.add_argument('--balanced-attempts', type=int, default=10,
+                        help='How many random windows to try before falling back '
+                             'to the best one (default 10).')
     parser.add_argument('--demo', action='store_true',
                         help='Allow generating synthetic demo data when --data-dir '
                              'has no real data. Without this flag, missing data is an error.')
